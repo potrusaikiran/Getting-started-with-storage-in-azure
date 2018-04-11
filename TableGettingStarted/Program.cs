@@ -1,0 +1,83 @@
+﻿namespace TableGettingStartedUsingResolver
+{
+    using System;
+    using Microsoft.Azure.KeyVault;
+    using Microsoft.WindowsAzure.Storage;
+    using Microsoft.WindowsAzure.Storage.Table;
+
+    /// <summary>
+    /// Demonstrates how to use encryption with the Azure Table service.
+    /// </summary>
+    public class Program
+    {
+        const string DemoTable = "demotable";
+
+        static void Main(string[] args)
+        {
+            Console.WriteLine("Table encryption sample");
+
+            // Retrieve storage account information from connection string
+            // How to create a storage connection string - https://azure.microsoft.com/en-us/documentation/articles/storage-configure-connection-string/
+            CloudStorageAccount storageAccount = EncryptionShared.Utility.CreateStorageAccountFromConnectionString();
+            CloudTableClient client = storageAccount.CreateCloudTableClient();
+            CloudTable table = client.GetTableReference(DemoTable + Guid.NewGuid().ToString("N"));
+
+            try
+            {
+                table.Create();
+
+                // Create the IKey used for encryption.
+                RsaKey key = new RsaKey("private:key1");           
+
+                DynamicTableEntity ent = new DynamicTableEntity() { PartitionKey = Guid.NewGuid().ToString(), RowKey = DateTime.Now.Ticks.ToString() };
+                ent.Properties.Add("EncryptedProp1", new EntityProperty(string.Empty));
+                ent.Properties.Add("EncryptedProp2", new EntityProperty("bar"));
+                ent.Properties.Add("NotEncryptedProp", new EntityProperty(1234));
+
+                // This is used to indicate whether a property should be encrypted or not given the partition key, row key, 
+                // and the property name.
+                Func<string, string, string, bool> encryptionResolver = (pk, rk, propName) =>
+                    {
+                        if (propName.StartsWith("EncryptedProp"))
+                        {
+                            return true;
+                        }
+
+                        return false;
+                    };
+
+                TableRequestOptions insertOptions = new TableRequestOptions()
+                {
+                    EncryptionPolicy = new TableEncryptionPolicy(key, null),
+
+                    EncryptionResolver = encryptionResolver
+                };
+
+                // Insert Entity
+                Console.WriteLine("Inserting the encrypted entity.");
+                table.Execute(TableOperation.Insert(ent), insertOptions, null);
+
+                // For retrieves, a resolver can be set up that will help pick the key based on the key id.
+                LocalResolver resolver = new LocalResolver();
+                resolver.Add(key);
+
+                TableRequestOptions retrieveOptions = new TableRequestOptions()
+                {
+                    EncryptionPolicy = new TableEncryptionPolicy(null, resolver)
+                };
+
+                // Retrieve Entity
+                Console.WriteLine("Retrieving the encrypted entity.");
+                TableOperation operation = TableOperation.Retrieve(ent.PartitionKey, ent.RowKey);
+                TableResult result = table.Execute(operation, retrieveOptions, null);
+
+                Console.WriteLine("Press enter key to exit");
+                Console.ReadLine();
+            }
+            finally
+            {
+                table.DeleteIfExists();
+            }
+        }
+    }
+}
